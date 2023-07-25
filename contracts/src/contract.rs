@@ -56,14 +56,14 @@ mod execute {
         total_games_count += 1;
         let game_details = BingoGame {
             players: vec![],
-            number_draws: Vec::with_capacity(25),
+            number_draws: Vec::new(),
             status: GameStatus::NotStarted,
             entry_fee: Some(entry_fee),
             min_join_duration,
             min_turn_duration,
             winner: None,
             pot: 0,
-            current_chance: -1,
+            current_chance: -999,
         };
         GAMES.save(deps.storage, total_games_count, &game_details)?;
         TOTAL_GAMES.save(deps.storage, &total_games_count)?;
@@ -111,7 +111,7 @@ mod execute {
         PLAYERS.save(
             deps.storage,
             (game_id, info.sender.to_owned()),
-            &Some(Player {
+            &(Player {
                 board: get_2d_array_with_random_number(),
                 bingo: false,
             }),
@@ -144,7 +144,7 @@ mod execute {
         })?;
         Ok(Response::new())
     }
-
+    //TODO: cw20 integration and claim_bingo() and integration tests
     // Players draws number till some player claims their bingo as success
     pub fn draw_number(
         deps: DepsMut,
@@ -165,7 +165,10 @@ mod execute {
         if &Some(info.sender) != &bingo_game.players[current_turn_player as usize] {
             return Err(StdError::generic_err(format!(
                 "This chance is for player: {:?}",
-                Some(&bingo_game.players[current_turn_player as usize])
+                &bingo_game.players[current_turn_player as usize]
+                    .clone()
+                    .unwrap()
+                    .as_str()
             )));
         };
         // circular array
@@ -181,6 +184,73 @@ mod execute {
                 Err(StdError::generic_err(
                     "Bingo Game: Player chance not updated",
                 ))
+            }
+        })?;
+
+        Ok(Response::new())
+    }
+
+    pub fn claim_bingo(
+        deps: DepsMut,
+        info: MessageInfo,
+        env: Env,
+        game_id: u64,
+    ) -> StdResult<Response> {
+        let bingo_game = GAMES.load(deps.storage, game_id)?;
+        let claimer_details = PLAYERS.load(deps.storage, (game_id, info.sender.to_owned()))?;
+
+        if bingo_game.status != GameStatus::Ongoing {
+            return Err(StdError::generic_err(
+                "Bingo Game: Cannot claim at this moment",
+            ));
+        };
+        if !bingo_game.players.contains(&Some(info.sender.to_owned())) {
+            return Err(StdError::generic_err(
+                "Bingo Game: Claimer is not participant of game",
+            ));
+        }
+
+        if claimer_details.to_owned().bingo {
+            return Err(StdError::generic_err(
+                "Bingo Game: Claimer Already won this game",
+            ));
+        }
+
+        let claimer_board = claimer_details.board;
+        let game_draws_numbers = bingo_game.number_draws;
+
+        let mut all_values_present = true;
+        // Checking player board contains all draws value till now.
+        for row in claimer_board.iter() {
+            for board_number in row.iter() {
+                if !game_draws_numbers.contains(board_number) {
+                    all_values_present = false;
+                }
+            }
+        }
+
+        if !all_values_present {
+            return Err(StdError::generic_err(
+                "Bingo Game: Players board numbers didn't matched with draws numbers",
+            ));
+        }
+
+        GAMES.update(deps.storage, game_id, |game| {
+            if let Some(mut game) = game {
+                game.status = GameStatus::Finished;
+                game.winner = Some(info.sender.to_owned());
+                Ok(game)
+            } else {
+                Err(StdError::generic_err("Bingo Game: Game data not updated"))
+            }
+        })?;
+
+        PLAYERS.update(deps.storage, (game_id, info.sender), |player| {
+            if let Some(mut player) = player {
+                player.bingo = true;
+                Ok(player)
+            } else {
+                Err(StdError::generic_err("Bingo Game: Player data not updated"))
             }
         })?;
 
@@ -216,21 +286,36 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
             game_id,
             player_address,
         } => to_binary(&query::get_player(deps, game_id, player_address)?),
+        DrawsNumbers { game_id } => to_binary(&query::get_draws_number(deps, game_id)?),
     }
 }
 mod query {
     use super::*;
+    use cosmwasm_std::StdError;
 
     pub fn get_total_games(deps: Deps) -> StdResult<Option<u64>> {
         let total_games = TOTAL_GAMES.may_load(deps.storage)?;
         Ok(total_games)
     }
 
-    pub fn get_player(deps: Deps, game_id: u64, player_address: Addr) -> StdResult<Option<Player>> {
+    pub fn get_player(deps: Deps, game_id: u64, player_address: Addr) -> StdResult<Player> {
         let player = PLAYERS
             .may_load(deps.storage, (game_id, player_address))?
             .unwrap();
         Ok(player)
+    }
+
+    pub fn get_draws_number(deps: Deps, game_id: u64) -> StdResult<Vec<Option<u64>>> {
+        let game = GAMES.may_load(deps.storage, game_id)?;
+        if game
+            .to_owned()
+            .expect("No game found for this id")
+            .number_draws
+            .is_empty()
+        {
+            return Err(StdError::generic_err("Bingo Game: No number draws yet"));
+        }
+        Ok(game.unwrap().number_draws)
     }
 }
 
@@ -377,10 +462,12 @@ mod test {
             .unwrap();
 
         // join new game
-        let player_add = Addr::unchecked("player1");
+        let player1_add = Addr::unchecked("player1");
+        let player2_add = Addr::unchecked("player2");
+
         let _call_to_join_game = app
             .execute_contract(
-                player_add.to_owned(),
+                player1_add.to_owned(),
                 contract_addr.to_owned(),
                 &ExecuteMsg::JoinGame { game_id: 1 },
                 &[],
@@ -389,18 +476,67 @@ mod test {
         //TODO: Game should not be join again
         // let _call2_to_join_game = app.execute_contract(player_add.to_owned(), contract_addr.to_owned(), &ExecuteMsg::JoinGame { game_id: 1 }, &[]).unwrap();
 
-        // TODO: Check whether the players get the board after joining.
-        let player_details: Player = app
+        let _call2_to_join_game = app
+            .execute_contract(
+                player2_add.to_owned(),
+                contract_addr.to_owned(),
+                &ExecuteMsg::JoinGame { game_id: 1 },
+                &[],
+            )
+            .unwrap();
+
+        let player1_details: Player = app
             .wrap()
             .query_wasm_smart(
                 contract_addr.to_owned(),
                 &QueryMsg::PlayerDetails {
                     game_id: 1,
-                    player_address: player_add.to_owned(),
+                    player_address: player1_add.to_owned(),
                 },
             )
             .unwrap();
 
-        println!("GAME BOARD: \n {:?}\n", player_details);
+        let player2_details: Player = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.to_owned(),
+                &QueryMsg::PlayerDetails {
+                    game_id: 1,
+                    player_address: player2_add.to_owned(),
+                },
+            )
+            .unwrap();
+
+        println!("GAME BOARD of PLAYER-1: \n {:?}\n", player1_details);
+        println!("GAME BOARD of PLAYER-2: \n {:?}\n", player2_details);
+
+        for _i in 0..20 {
+            let _call_to_draw_number_by_player1 = app
+                .execute_contract(
+                    player1_add.to_owned(),
+                    contract_addr.to_owned(),
+                    &ExecuteMsg::DrawNumber { game_id: 1 },
+                    &[],
+                )
+                .unwrap();
+
+            let _call_to_draw_number_by_player2 = app
+                .execute_contract(
+                    player2_add.to_owned(),
+                    contract_addr.to_owned(),
+                    &ExecuteMsg::DrawNumber { game_id: 1 },
+                    &[],
+                )
+                .unwrap();
+        }
+        let draws_number: Vec<Option<u64>> = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.to_owned(),
+                &QueryMsg::DrawsNumbers { game_id: 1 },
+            )
+            .unwrap();
+
+        println!("DRAWS NUMBERS: \n {:?}\n", draws_number);
     }
 }

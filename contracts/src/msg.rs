@@ -19,4 +19,5 @@ pub enum ExecuteMsg {
 pub enum QueryMsg {
     TotalGames {},
     PlayerDetails { game_id: u64, player_address: Addr },
+    DrawsNumbers {game_id: u64}
 }

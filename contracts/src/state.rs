@@ -44,4 +44,4 @@ pub const GAMES: Map<u64, BingoGame> = Map::new("bingo");
 pub const ADMIN: Item<Addr> = Item::new("admin");
 pub const TOTAL_GAMES: Item<u64> = Item::new("totalgames");
 // Game_id -> PLayer_Address -> Player_details
-pub const PLAYERS: Map<(u64, Addr), Option<Player>> = Map::new("Players");
+pub const PLAYERS: Map<(u64, Addr), Player> = Map::new("Players");
