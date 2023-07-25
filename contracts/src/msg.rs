@@ -9,10 +9,14 @@ pub struct InstantiateMsg {
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub enum ExecuteMsg {
-    StartNewGame { game_details: BingoGame },
+    CreateNewGame { min_join_duration: u64, min_turn_duration: u64, entry_fee: u32 },
+    JoinGame { game_id: u64},
+    StartGame {game_id: u64},
+    DrawNumber {game_id: u64},
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub enum QueryMsg {
     TotalGames {},
+    PlayerDetails { game_id: u64, player_address: Addr },
 }
