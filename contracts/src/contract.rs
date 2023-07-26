@@ -2,10 +2,12 @@ use rand::Rng;
 
 use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
 use crate::state::{BingoGame, GameStatus, Player, ADMIN, GAMES, PLAYERS, TOTAL_GAMES};
-
 use cosmwasm_std::{
-    to_binary, Addr, Binary, Deps, DepsMut, Empty, Env, MessageInfo, Response, StdResult,
+    to_binary, Addr, Binary, CosmosMsg, Deps, DepsMut, Empty, Env, MessageInfo, Response,
+    StdResult, SubMsg, Uint128, WasmMsg,
 };
+// use cw20::{Cw20Contract, Cw20ExecuteMsg};
+use cw20_base::msg::ExecuteMsg as Cw20ExecuteMsg;
 
 pub fn instantiate(
     deps: DepsMut,
@@ -16,6 +18,7 @@ pub fn instantiate(
     let contract_admin: StdResult<Addr> = Ok(msg.admin);
     ADMIN.save(deps.storage, &contract_admin?)?;
     TOTAL_GAMES.save(deps.storage, &0)?;
+
     Ok(Response::new())
 }
 
@@ -28,8 +31,16 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
             min_join_duration,
             min_turn_duration,
             entry_fee,
-        } => execute::create_new_game(deps, info, min_join_duration, min_turn_duration, entry_fee),
-        JoinGame { game_id } => execute::join_bingo_game(deps, info, game_id),
+            token_address,
+        } => execute::create_new_game(
+            deps,
+            info,
+            min_join_duration,
+            min_turn_duration,
+            entry_fee,
+            token_address,
+        ),
+        JoinGame { game_id } => execute::join_bingo_game(deps, env, info, game_id),
         StartGame { game_id } => execute::start_game(deps, info, game_id),
         DrawNumber { game_id } => execute::draw_number(deps, info, env, game_id),
     }
@@ -44,7 +55,8 @@ mod execute {
         info: MessageInfo,
         min_join_duration: u64,
         min_turn_duration: u64,
-        entry_fee: u32,
+        entry_fee: u128,
+        token_address: Addr,
     ) -> StdResult<Response> {
         let contract_admin = ADMIN.load(deps.storage)?;
         if contract_admin != info.sender {
@@ -64,6 +76,7 @@ mod execute {
             winner: None,
             pot: 0,
             current_chance: -999,
+            token_address,
         };
         GAMES.save(deps.storage, total_games_count, &game_details)?;
         TOTAL_GAMES.save(deps.storage, &total_games_count)?;
@@ -71,7 +84,12 @@ mod execute {
         Ok(Response::new())
     }
 
-    pub fn join_bingo_game(deps: DepsMut, info: MessageInfo, game_id: u64) -> StdResult<Response> {
+    pub fn join_bingo_game(
+        deps: DepsMut,
+        env: Env,
+        info: MessageInfo,
+        game_id: u64,
+    ) -> StdResult<Response> {
         let bingo_game = GAMES.load(deps.storage, game_id)?;
         let contract_admin = ADMIN.load(deps.storage)?;
         let players = PLAYERS.may_load(deps.storage, (game_id, info.sender.to_owned()))?;
@@ -97,10 +115,24 @@ mod execute {
                 "Bingo Game: Player already joined this game",
             ));
         }
+
+        let msg = Cw20ExecuteMsg::TransferFrom {
+            owner: info.sender.to_string().clone(),
+            recipient: env.contract.address.to_string().clone(),
+            amount: bingo_game.entry_fee.unwrap().into(),
+        };
+
+        let exec: Vec<SubMsg> = vec![SubMsg::new(CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: bingo_game.token_address.clone().to_string(),
+            msg: to_binary(&msg).unwrap(),
+            funds: vec![],
+        }))];
+
         GAMES.update(deps.storage, game_id, |game| {
             if let Some(mut game) = game {
                 game.players.push(Some(info.sender.to_owned()));
                 game.current_chance = 0;
+                game.pot = game.pot + game.entry_fee.unwrap();
                 Ok(game)
             } else {
                 Err(StdError::generic_err(
@@ -117,7 +149,14 @@ mod execute {
             }),
         )?;
 
-        Ok(Response::new())
+        let res = Response::new()
+            .add_attribute("action", "transfer_from")
+            .add_attribute("from", info.sender.clone())
+            .add_attribute("to", env.contract.address.clone())
+            .add_attribute("amount", bingo_game.entry_fee.unwrap().to_string())
+            .add_submessages(exec);
+
+        Ok(res)
     }
 
     pub fn start_game(deps: DepsMut, info: MessageInfo, game_id: u64) -> StdResult<Response> {
@@ -144,7 +183,7 @@ mod execute {
         })?;
         Ok(Response::new())
     }
-    //TODO: cw20 integration and claim_bingo() and integration tests
+
     // Players draws number till some player claims their bingo as success
     pub fn draw_number(
         deps: DepsMut,
@@ -235,17 +274,29 @@ mod execute {
             ));
         }
 
+        let msg = Cw20ExecuteMsg::Transfer {
+            recipient: info.sender.to_string(),
+            amount: Uint128::from(bingo_game.pot),
+        };
+
+        let exec: Vec<SubMsg> = vec![SubMsg::new(CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: env.contract.address.to_string(),
+            msg: to_binary(&msg).unwrap(),
+            funds: vec![],
+        }))];
+        let pot_amount = bingo_game.pot;
         GAMES.update(deps.storage, game_id, |game| {
             if let Some(mut game) = game {
                 game.status = GameStatus::Finished;
                 game.winner = Some(info.sender.to_owned());
+                game.pot = 0;
                 Ok(game)
             } else {
                 Err(StdError::generic_err("Bingo Game: Game data not updated"))
             }
         })?;
 
-        PLAYERS.update(deps.storage, (game_id, info.sender), |player| {
+        PLAYERS.update(deps.storage, (game_id, info.sender.to_owned()), |player| {
             if let Some(mut player) = player {
                 player.bingo = true;
                 Ok(player)
@@ -254,7 +305,13 @@ mod execute {
             }
         })?;
 
-        Ok(Response::new())
+        let res = Response::new()
+            .add_attribute("action", "transfer")
+            .add_attribute("from", env.contract.address.clone())
+            .add_attribute("to", info.sender.clone())
+            .add_attribute("amount", pot_amount.to_string())
+            .add_submessages(exec);
+        Ok(res)
     }
 }
 
@@ -326,12 +383,17 @@ mod test {
     use cosmwasm_std::from_binary;
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
     use cosmwasm_std::Addr;
+    use cw20_base::contract::{
+        execute as cw20_execute, instantiate as cw20_instantiate, query as cw20_query,
+    };
+    use cw20_base::msg::InstantiateMsg as cw20_instantiateMsg;
     use cw_multi_test::{App, ContractWrapper, Executor};
 
     #[test]
     fn test_instantiate() {
         let mut deps = mock_dependencies();
         let env = mock_env();
+        // let a = cw20_base::contract::execute_mint(deps, env, info, recipient, amount)
         let info = mock_info("owner", &[]);
         let admin_address = Addr::unchecked("bingoadmin");
         let instantiate_response = instantiate(
@@ -386,10 +448,36 @@ mod test {
         let mut app = App::default();
 
         let code = ContractWrapper::new(execute, instantiate, query);
-
+        let token_code = ContractWrapper::new(cw20_execute, cw20_instantiate, cw20_query);
         let code_id = app.store_code(Box::new(code));
+        let token_code_id = app.store_code(Box::new(token_code));
 
         let admin = Addr::unchecked("owner");
+        let player1_add = Addr::unchecked("player1");
+        let player2_add = Addr::unchecked("player2");
+
+        let initial_balance = cw20::Cw20Coin {
+            address: admin.to_string(),
+            amount: Uint128::from(10_00_00_00_00u128),
+        };
+
+        let token_address = app
+            .instantiate_contract(
+                token_code_id,
+                admin.to_owned(),
+                &cw20_instantiateMsg {
+                    name: "mock_token".to_string(),
+                    symbol: "MOCK".to_string(),
+                    decimals: 0u8,
+                    initial_balances: vec![initial_balance],
+                    mint: None,
+                    marketing: None,
+                },
+                &[],
+                "Mock_Token",
+                None,
+            )
+            .unwrap();
 
         let contract_addr = app
             .instantiate_contract(
@@ -407,6 +495,131 @@ mod test {
         println!("Code ID: {}", code_id);
         println!("Admin: {:?}", admin);
         println!("Address: {:?}", contract_addr);
+
+        let balance_of_admin_in_token_contract: cw20::BalanceResponse = app
+            .wrap()
+            .query_wasm_smart(
+                token_address.to_owned(),
+                &cw20::Cw20QueryMsg::Balance {
+                    address: admin.to_string(),
+                },
+            )
+            .unwrap();
+
+        println!(
+            "BALANCE OF ADMIN IN TOKEN CONTRACT: {:?}",
+            balance_of_admin_in_token_contract.balance.u128()
+        );
+
+        let _call_to_transfer_token_to_player1 = app
+            .execute_contract(
+                admin.to_owned(),
+                token_address.to_owned(),
+                &cw20::Cw20ExecuteMsg::Transfer {
+                    recipient: player1_add.to_owned().into_string(),
+                    amount: Uint128::from(1000u128),
+                },
+                &[],
+            )
+            .unwrap();
+
+        let _call_to_transfer_token_to_player2 = app
+            .execute_contract(
+                admin.to_owned(),
+                token_address.to_owned(),
+                &cw20::Cw20ExecuteMsg::Transfer {
+                    recipient: player2_add.to_owned().into_string(),
+                    amount: Uint128::from(1000u128),
+                },
+                &[],
+            )
+            .unwrap();
+
+        let balance_of_player1_in_token_contract: cw20::BalanceResponse = app
+            .wrap()
+            .query_wasm_smart(
+                token_address.to_owned(),
+                &cw20::Cw20QueryMsg::Balance {
+                    address: player1_add.to_owned().to_string(),
+                },
+            )
+            .unwrap();
+
+        println!(
+            "BALANCE OF PLAYER-1 IN TOKEN CONTRACT: {}",
+            balance_of_player1_in_token_contract.balance.u128()
+        );
+        let balance_of_player2_in_token_contract: cw20::BalanceResponse = app
+            .wrap()
+            .query_wasm_smart(
+                token_address.to_owned(),
+                &cw20::Cw20QueryMsg::Balance {
+                    address: player2_add.to_owned().to_string(),
+                },
+            )
+            .unwrap();
+
+        println!(
+            "BALANCE OF PLAYER-2 IN TOKEN CONTRACT: {}",
+            balance_of_player2_in_token_contract.balance.u128()
+        );
+
+        let _call_to_approve_player1_tokens_to_bingo_contract = app
+            .execute_contract(
+                player1_add.to_owned(),
+                token_address.to_owned(),
+                &cw20::Cw20ExecuteMsg::IncreaseAllowance {
+                    spender: contract_addr.to_owned().into_string(),
+                    amount: Uint128::new(1000u128),
+                    expires: None,
+                },
+                &[],
+            )
+            .unwrap();
+
+        let _call_to_approve_player2_tokens_to_bingo_contract = app
+            .execute_contract(
+                player2_add.to_owned(),
+                token_address.to_owned(),
+                &cw20::Cw20ExecuteMsg::IncreaseAllowance {
+                    spender: contract_addr.to_owned().into_string(),
+                    amount: Uint128::new(1000u128),
+                    expires: None,
+                },
+                &[],
+            )
+            .unwrap();
+
+        let allowance_of_player1_to_bingo_contract: cw20::AllowanceResponse = app
+            .wrap()
+            .query_wasm_smart(
+                token_address.to_owned(),
+                &cw20::Cw20QueryMsg::Allowance {
+                    owner: player1_add.to_owned().into_string(),
+                    spender: contract_addr.to_owned().into_string(),
+                },
+            )
+            .unwrap();
+
+        let allowance_of_player2_to_bingo_contract: cw20::AllowanceResponse = app
+            .wrap()
+            .query_wasm_smart(
+                token_address.to_owned(),
+                &cw20::Cw20QueryMsg::Allowance {
+                    owner: player2_add.to_owned().into_string(),
+                    spender: contract_addr.to_owned().into_string(),
+                },
+            )
+            .unwrap();
+
+        println!(
+            "Allowance of player-1 to bingo contract: {}",
+            allowance_of_player1_to_bingo_contract.allowance.u128()
+        );
+        println!(
+            "Allowance of player-2 to bingo contract: {}",
+            allowance_of_player2_to_bingo_contract.allowance.u128()
+        );
 
         let total_games_before_resp: Option<u64> = app
             .wrap()
@@ -426,6 +639,7 @@ mod test {
             winner: None,
             pot: 0,
             current_chance: -1,
+            token_address: token_address.to_owned(),
         };
 
         let _call_to_create_new_game = app
@@ -435,7 +649,8 @@ mod test {
                 &ExecuteMsg::CreateNewGame {
                     min_join_duration: 0,
                     min_turn_duration: 0,
-                    entry_fee: 0,
+                    entry_fee: 123,
+                    token_address: token_address.to_owned(),
                 },
                 &[],
             )
@@ -462,8 +677,6 @@ mod test {
             .unwrap();
 
         // join new game
-        let player1_add = Addr::unchecked("player1");
-        let player2_add = Addr::unchecked("player2");
 
         let _call_to_join_game = app
             .execute_contract(
@@ -473,7 +686,8 @@ mod test {
                 &[],
             )
             .unwrap();
-        //TODO: Game should not be join again
+
+        // Note:  Game should not be join again
         // let _call2_to_join_game = app.execute_contract(player_add.to_owned(), contract_addr.to_owned(), &ExecuteMsg::JoinGame { game_id: 1 }, &[]).unwrap();
 
         let _call2_to_join_game = app
@@ -509,6 +723,36 @@ mod test {
 
         println!("GAME BOARD of PLAYER-1: \n {:?}\n", player1_details);
         println!("GAME BOARD of PLAYER-2: \n {:?}\n", player2_details);
+
+        let balance_of_player1_in_token_contract_after: cw20::BalanceResponse = app
+            .wrap()
+            .query_wasm_smart(
+                token_address.to_owned(),
+                &cw20::Cw20QueryMsg::Balance {
+                    address: player1_add.to_owned().to_string(),
+                },
+            )
+            .unwrap();
+
+        println!(
+            "BALANCE OF PLAYER-1 IN TOKEN CONTRACT AFTER JOINING GAME: {}",
+            balance_of_player1_in_token_contract_after.balance.u128()
+        );
+
+        let balance_of_player2_in_token_contract_after: cw20::BalanceResponse = app
+            .wrap()
+            .query_wasm_smart(
+                token_address.to_owned(),
+                &cw20::Cw20QueryMsg::Balance {
+                    address: player1_add.to_owned().to_string(),
+                },
+            )
+            .unwrap();
+
+        println!(
+            "BALANCE OF PLAYER-2 IN TOKEN CONTRACT AFTER JOINING GAME: {}",
+            balance_of_player2_in_token_contract_after.balance.u128()
+        );
 
         for _i in 0..20 {
             let _call_to_draw_number_by_player1 = app

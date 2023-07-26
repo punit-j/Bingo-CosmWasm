@@ -8,12 +8,13 @@ pub struct BingoGame {
     pub players: Vec<Option<Addr>>,
     pub number_draws: Vec<Option<u64>> ,
     pub status: GameStatus,
-    pub entry_fee: Option<u32>,
+    pub entry_fee: Option<u128>,
     pub min_join_duration: u64,
     pub min_turn_duration: u64,
     pub winner: Option<Addr>, // Address of the winning player
-    pub pot: u32,             // Total pot accumulated of entry fees till min_join_duration
+    pub pot: u128,             // Total pot accumulated of entry fees till min_join_duration
     pub current_chance: i64,
+    pub token_address: Addr
 }
  
 
