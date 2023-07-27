@@ -6,23 +6,22 @@ use serde::{Deserialize, Serialize};
 pub struct BingoGame {
     // id -> Addr -> Bingo
     pub players: Vec<Option<Addr>>,
-    pub number_draws: Vec<Option<u64>> ,
+    pub number_draws: Vec<Option<u64>>,
     pub status: GameStatus,
     pub entry_fee: Option<u128>,
     pub min_join_duration: u64,
     pub min_turn_duration: u64,
     pub winner: Option<Addr>, // Address of the winning player
-    pub pot: u128,             // Total pot accumulated of entry fees till min_join_duration
+    pub pot: u128,            // Total pot accumulated of entry fees till min_join_duration
     pub current_chance: i64,
-    pub token_address: Addr
+    pub token_address: Addr,
 }
- 
 
 // Player information
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Player {
     pub board: [[Option<u64>; 5]; 5], // 5x5 Bingo board
-    pub bingo: bool, // Whether the player achieved a Bingo
+    pub bingo: bool,                  // Whether the player achieved a Bingo
 }
 
 // Game status enum

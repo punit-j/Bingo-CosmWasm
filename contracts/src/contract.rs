@@ -3,11 +3,10 @@ use rand::Rng;
 use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
 use crate::state::{BingoGame, GameStatus, Player, ADMIN, GAMES, PLAYERS, TOTAL_GAMES};
 use cosmwasm_std::{
-    to_binary, Addr, Binary, CosmosMsg, Deps, DepsMut, Empty, Env, MessageInfo, Response,
+    entry_point, to_binary, Addr, Binary, CosmosMsg, Deps, DepsMut, Env, MessageInfo, Response,
     StdResult, SubMsg, Uint128, WasmMsg,
 };
-// use cw20::{Cw20Contract, Cw20ExecuteMsg};
-use cw20_base::msg::ExecuteMsg as Cw20ExecuteMsg;
+use cw20::Cw20ExecuteMsg;
 
 pub fn instantiate(
     deps: DepsMut,
@@ -22,7 +21,6 @@ pub fn instantiate(
     Ok(Response::new())
 }
 
-#[allow(dead_code)]
 pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> StdResult<Response> {
     use ExecuteMsg::*;
 
@@ -41,7 +39,7 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
             token_address,
         ),
         JoinGame { game_id } => execute::join_bingo_game(deps, env, info, game_id),
-        StartGame { game_id } => execute::start_game(deps, info, game_id),
+        StartGame { game_id } => execute::start_game(deps, env, info, game_id),
         DrawNumber { game_id } => execute::draw_number(deps, info, env, game_id),
     }
 }
@@ -104,6 +102,13 @@ mod execute {
             ));
         }
 
+        if bingo_game.min_join_duration < env.block.time.seconds() {
+            return Err(StdError::generic_err(format!(
+                "Bingo Game: Join duration of game has passed!! Sorry you are late with {} seconds",
+                env.block.time.seconds() - bingo_game.min_join_duration,
+            )));
+        }
+
         if players.is_some() {
             return Err(StdError::generic_err(
                 "Join Game: Player already joined the game",
@@ -159,7 +164,12 @@ mod execute {
         Ok(res)
     }
 
-    pub fn start_game(deps: DepsMut, info: MessageInfo, game_id: u64) -> StdResult<Response> {
+    pub fn start_game(
+        deps: DepsMut,
+        env: Env,
+        info: MessageInfo,
+        game_id: u64,
+    ) -> StdResult<Response> {
         let mut bingo_game = GAMES.load(deps.storage, game_id)?;
         let contract_admin = ADMIN.load(deps.storage)?;
         if contract_admin != info.sender {
@@ -176,6 +186,7 @@ mod execute {
         GAMES.update(deps.storage, game_id, |game| {
             if let Some(mut game) = game {
                 game.status = GameStatus::Waiting;
+                game.min_join_duration = env.block.time.seconds() + game.min_join_duration;
                 Ok(game)
             } else {
                 Err(StdError::generic_err("Bingo Game: Game not started"))
@@ -344,6 +355,7 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
             player_address,
         } => to_binary(&query::get_player(deps, game_id, player_address)?),
         DrawsNumbers { game_id } => to_binary(&query::get_draws_number(deps, game_id)?),
+        ActiveGames {} => to_binary(&query::get_active_waiting_games(deps)?),
     }
 }
 mod query {
@@ -374,13 +386,30 @@ mod query {
         }
         Ok(game.unwrap().number_draws)
     }
+
+    pub fn get_active_waiting_games(deps: Deps) -> StdResult<Vec<Option<u64>>> {
+        let total_games = TOTAL_GAMES.may_load(deps.storage)?;
+        let mut active_game_ids: Vec<Option<u64>> = Vec::new();
+        if total_games.is_some() {
+            for game_id in 1..=total_games.unwrap() {
+                let game = GAMES.may_load(deps.storage, game_id)?;
+                if game.unwrap().status == GameStatus::Waiting {
+                    active_game_ids.push(Some(game_id));
+                }
+            }
+            Ok(active_game_ids)
+        } else {
+            return Err(StdError::generic_err(
+                "Bingo Game: No Active waiting game at this moment",
+            ));
+        }
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::state::GameStatus;
-    use cosmwasm_std::from_binary;
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
     use cosmwasm_std::Addr;
     use cw20_base::contract::{
@@ -629,7 +658,7 @@ mod test {
         println!("Total games before resp: {:?}", total_games_before_resp);
         assert_eq!(total_games_before_resp, Some(0), "assertion failed");
 
-        let mock_game_details = BingoGame {
+        let _mock_game_details = BingoGame {
             players: vec![None],
             number_draws: vec![None],
             status: GameStatus::Waiting,

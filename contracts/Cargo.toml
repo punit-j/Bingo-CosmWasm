@@ -14,7 +14,8 @@ serde = { version = "1.0.103", default-features = false, features = ["derive"] }
 cw-storage-plus = "1.1.0"
 rand = "0.8.5"
 cw20 = "1.1.0"
-cw20-base = "1.1.0"
+getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 cw-multi-test = "0.16.5"
+cw20-base = "1.1.0"
