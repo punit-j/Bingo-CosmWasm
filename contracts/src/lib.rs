@@ -1,8 +1,8 @@
 use cosmwasm_std::{entry_point, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult};
 use msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
-mod contract;
-mod msg;
-mod state;
+pub mod contract;
+pub mod msg;
+pub  mod state;
 
 #[entry_point]
 pub fn instantiate(

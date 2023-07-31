@@ -1,12 +1,12 @@
 use cosmwasm_std::Addr;
-use serde::{Deserialize, Serialize};
+use cosmwasm_schema::cw_serde;
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[cw_serde]
 pub struct InstantiateMsg {
     pub admin: Addr,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[cw_serde]
 pub enum ExecuteMsg {
     CreateNewGame {
         min_join_duration: u64,
@@ -25,7 +25,7 @@ pub enum ExecuteMsg {
     },
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[cw_serde]
 pub enum QueryMsg {
     TotalGames {},
     PlayerDetails { game_id: u64, player_address: Addr },

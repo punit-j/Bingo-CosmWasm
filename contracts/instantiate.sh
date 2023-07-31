@@ -2,11 +2,11 @@
 INIT='{"admin": }'
 # code_id of the contract deployed on osmosis
 CODE_ID=
-
+wallet=""
 
 #instantiate the contract
 osmosisd tx wasm instantiate $CODE_ID "$INIT" \
-    --from unatrix_wallet \
+    --from $wallet \
     --label "my contract" \
     --gas-prices 0.025uosmo \
     --gas auto \

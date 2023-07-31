@@ -10,7 +10,6 @@ RES=$(osmosisd tx wasm store artifacts/contracts.wasm \
 --gas-adjustment 1.3 -y \
 --output json -b block)
 
-echo $RES
 CODE_ID=$(echo $RES | jq -r '.logs[0].events[-1].attributes[1].value')
 echo $CODE_ID
 
